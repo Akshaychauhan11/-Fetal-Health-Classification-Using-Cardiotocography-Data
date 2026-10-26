@@ -23,7 +23,7 @@ Status legend: `[ ]` not started · `[~]` in progress · `[x]` done
 - [x] Plot class distribution (`fetal_health` value counts) — confirm and visualize imbalance
 - [x] Implement stratified train/calibration/test split (`src/data/split.py`)
 - [x] Train Logistic Regression (`class_weight='balanced'`)
-- [ ] Train Random Forest (`class_weight='balanced'`) — *(Handled separately by teammate)*
+- [x] Train Random Forest (`class_weight='balanced'`) (`notebooks/03_random_forest.ipynb`)
 - [ ] Train XGBoost — *(Handled separately by teammate)*
 - [x] Generate per-class classification report (precision/recall/F1) for model
 - [x] Plot confusion matrix for Logistic Regression model
