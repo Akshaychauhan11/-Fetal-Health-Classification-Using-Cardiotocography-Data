@@ -24,7 +24,7 @@ Status legend: `[ ]` not started · `[~]` in progress · `[x]` done
 - [x] Implement stratified train/calibration/test split (`src/data/split.py`)
 - [x] Train Logistic Regression (`class_weight='balanced'`)
 - [x] Train Random Forest (`class_weight='balanced'`) (`notebooks/03_random_forest.ipynb`)
-- [ ] Train XGBoost — *(Handled separately by teammate)*
+- [x] Train XGBoost (`notebooks/04_xgboost.ipynb`)
 - [x] Generate per-class classification report (precision/recall/F1) for model
 - [x] Plot confusion matrix for Logistic Regression model
 - [x] Save trained model to `models/logistic_regression.joblib`
@@ -39,11 +39,11 @@ Status legend: `[ ]` not started · `[~]` in progress · `[x]` done
 
 **Owner: Member 2 + Member 3**
 
-- [ ] Compute Brier score for best baseline model
-- [ ] Compute Expected Calibration Error (ECE)
-- [ ] Plot reliability diagram (`sklearn.calibration.calibration_curve`)
-- [ ] Document: is raw confidence actually trustworthy, or overconfident?
-- [ ] Commit + push
+- [x] Compute Brier score for best baseline model
+- [x] Compute Expected Calibration Error (ECE)
+- [x] Plot reliability diagram (`sklearn.calibration.calibration_curve`)
+- [x] Document: is raw confidence actually trustworthy, or overconfident?
+- [x] Commit + push
 
 ---
 

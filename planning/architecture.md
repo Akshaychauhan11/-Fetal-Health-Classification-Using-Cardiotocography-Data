@@ -36,12 +36,14 @@ fetal-health-uncertainty/
 ├── notebooks/
 │   ├── 01_eda.ipynb
 │   ├── 02_baseline_models.ipynb
-│   ├── 03_calibration.ipynb
-│   ├── 04_conformal_prediction.ipynb
-│   ├── 05_mondrian_conformal.ipynb
-│   ├── 06_calibration_size_sensitivity.ipynb
-│   ├── 07_abstention.ipynb
-│   └── 08_shap_explainability.ipynb
+│   ├── 03_random_forest.ipynb
+│   ├── 04_xgboost.ipynb
+│   ├── 05_calibration.ipynb
+│   ├── 06_conformal_prediction.ipynb
+│   ├── 07_mondrian_conformal.ipynb
+│   ├── 08_calibration_size_sensitivity.ipynb
+│   ├── 09_abstention.ipynb
+│   └── 10_shap_explainability.ipynb
 │
 ├── src/
 │   ├── data/
