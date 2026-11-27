@@ -49,16 +49,34 @@ Status legend: `[ ]` not started · `[~]` in progress · `[x]` done
 
 ## Phase 3 — Conformal Prediction (Objective 3)
 
-**Owner: Member 3**
+### Phase 3A — Global Conformal Prediction & Scoring Mechanics
+**Owner: Member 3A**
+- [x] Install and verify MAPIE on the calibration split (`notebooks/06_conformal_prediction.ipynb`)
+- [x] Implement LAC (Least Ambiguous Classifier) non-conformity score
+- [x] Implement APS (Adaptive Prediction Sets) non-conformity score
+- [x] Sweep significance levels $\alpha \in [0.01, 0.25]$: plot marginal coverage vs. average set size
+- [x] Evaluate set composition distributions (empty sets, singletons, multi-class sets)
+- [x] Evaluate per-class coverage under global CP and document minority (Pathological) under-coverage
+- [x] Refactor reusable logic into `src/conformal/global_cp.py`
+- [x] Export summary curves to `reports/figures/global_conformal_comparison.png`
+- [ ] PR & merge branch `feature/global-conformal`
 
-- [ ] Install and test MAPIE on the calibration set
-- [ ] Implement LAC conformal prediction — global (all classes together)
-- [ ] Implement APS (Adaptive Prediction Sets) — global
-- [ ] Compare LAC vs APS: coverage, average prediction-set size
-- [ ] Implement Mondrian (class-conditional) conformal prediction
-- [ ] Compare global vs Mondrian coverage, specifically for the Pathological class
-- [ ] Calibration-size sensitivity experiment: small / medium / large calibration subsets → measure coverage stability + prediction-set size variability for Pathological class
-- [ ] Report results as mean ± standard deviation across repeated runs
+### Phase 3B — Mondrian (Class-Conditional) CP & Sensitivity Analysis
+**Owner: Member 3B**
+- [x] Implement Mondrian (class-conditional) conformal prediction (`notebooks/07_mondrian_conformal.ipynb`)
+- [x] Compare per-class coverage: Global CP vs. Mondrian CP (focus on Pathological class recovery)
+- [x] Quantify the efficiency cost (increase in average set size) of Mondrian guarantees
+- [x] Implement calibration-size sensitivity experiment (`notebooks/08_calibration_size_sensitivity.ipynb`)
+- [x] Run 30–50 Monte-Carlo repetitions across small/medium/full calibration subsets
+- [x] Report sensitivity metrics as mean ± standard deviation across seeds
+- [x] Refactor reusable logic into `src/conformal/mondrian_cp.py`
+- [x] Export Mondrian comparison and sensitivity plots to `reports/figures/mondrian_comparison.png` and `reports/figures/calibration_sensitivity.png`
+- [ ] PR & merge branch `feature/mondrian-conformal`
+
+### Phase 3 Joint Milestone
+**Owners: Member 3A + Member 3B**
+- [x] Produce unified Global vs. Mondrian comparison table for report/synopsis
+- [x] Verify standard interface format of prediction sets for Phase 4 (Selective Abstention)
 - [ ] Commit + push
 
 ---
@@ -67,10 +85,10 @@ Status legend: `[ ]` not started · `[~]` in progress · `[x]` done
 
 **Owner: Member 3 + Member 2**
 
-- [ ] Implement accept/abstain decision logic based on conformal prediction-set size / confidence
-- [ ] Build the A–E method comparison (baseline / confidence-threshold / calibrated-threshold / global CP / Mondrian CP)
-- [ ] Compute coverage and selective risk for each method
-- [ ] Plot risk–coverage curve
+- [x] Implement accept/abstain decision logic based on conformal prediction-set size / confidence (`src/abstention/selective.py`)
+- [x] Build the A–E method comparison (baseline / confidence-threshold / calibrated-threshold / global CP / Mondrian CP)
+- [x] Compute coverage and selective risk for each method (`notebooks/09_abstention.ipynb`)
+- [x] Plot risk–coverage curve (`reports/figures/risk_coverage_curve.png`)
 - [ ] Commit + push
 
 ---
@@ -79,9 +97,9 @@ Status legend: `[ ]` not started · `[~]` in progress · `[x]` done
 
 **Owner: Member 4**
 
-- [ ] Apply SHAP to the best model
-- [ ] Generate feature-importance plots for accepted predictions
-- [ ] Show example: one accepted case with top contributing features explained
+- [x] Apply SHAP to the best model (`src/explainability/shap_explain.py`)
+- [x] Generate feature-importance plots for accepted predictions (`reports/figures/shap_global_importance.png`)
+- [x] Show example: one accepted case with top contributing features explained (`notebooks/10_shap_explainability.ipynb`, `reports/figures/shap_local_example.png`)
 - [ ] Commit + push
 
 ---

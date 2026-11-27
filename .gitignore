@@ -8,6 +8,7 @@ __pycache__/
 *.py[cod]
 *$py.class
 *.ipynb_checkpoints/
+.ipynb_checkpoints
 
 # IDE / Editor
 .vscode/
@@ -18,7 +19,10 @@ __pycache__/
 .DS_Store
 Thumbs.db
 
-# Large / temporary data (keep raw data tracked since it's only ~228KB)
-data/processed/*.csv
+# Large models & outputs
+models/*.joblib
+scratch/
+
+# Database files
 *.sqlite
 *.db

@@ -45,5 +45,6 @@ Every other rule below exists to protect this one.
 
 - **Member 1** — Dataset, EDA, preprocessing, class-distribution analysis, train/calibration/test split design.
 - **Member 2** — Baseline ML models, hyperparameter tuning, probability calibration, classification evaluation.
-- **Member 3** — Conformal uncertainty: LAC, APS, global and Mondrian conformal prediction, abstention, coverage/selective-risk analysis, calibration-size sensitivity.
+- **Member 3 (Co-lead Phase 3A)** — Conformal uncertainty: LAC & APS scoring mechanics, global conformal prediction, marginal coverage vs. efficiency benchmarks, selective abstention logic.
+- **Co-owner Phase 3B (e.g. Member 2 / Member 1)** — Mondrian (class-conditional) conformal prediction, minority-class coverage guarantees, calibration-size sensitivity analysis (Monte Carlo runs, mean ± std).
 - **Member 4** — Explainability (SHAP), FastAPI backend, React frontend, SQLite integration, final prototype.
