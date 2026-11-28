@@ -128,8 +128,8 @@ def evaluate_selective_abstention(
         false_alarms = int(np.sum((y_t_acc == 1.0) & (y_p_acc == 3.0)))
         total_normal_accepted = int(np.sum(y_t_acc == 1.0))
     else:
-        selective_risk = 0.0
-        selective_acc = 1.0
+        selective_risk = np.nan
+        selective_acc = np.nan
         false_reassurances = 0
         total_patho_accepted = 0
         false_alarms = 0
@@ -137,8 +137,8 @@ def evaluate_selective_abstention(
 
     return {
         "coverage": round(coverage, 4),
-        "selective_risk": round(selective_risk, 4),
-        "selective_accuracy": round(selective_acc, 4),
+        "selective_risk": round(selective_risk, 4) if not np.isnan(selective_risk) else np.nan,
+        "selective_accuracy": round(selective_acc, 4) if not np.isnan(selective_acc) else np.nan,
         "n_accepted": n_accepted,
         "n_abstained": n_abstained,
         "false_reassurances": false_reassurances,
@@ -162,13 +162,18 @@ def compute_ae_method_comparison(
     Computes BOTH RF-argmax risk (standard definition where accepted cases use the base model argmax)
     and singleton-label risk for conformal methods, alongside false reassurances and false alarms.
 
-    If matched_coverage is provided, Methods B and C thresholds are tuned to match that target coverage;
-    otherwise fixed thresholds (tau=0.80) are used and noted.
+    If matched_coverage is provided, Methods B and C thresholds are tuned on the calibration set
+    to match that target coverage (eliminating test-set snooping); otherwise fixed thresholds (tau=0.80) are used.
     """
     from src.conformal.global_cp import fit_global_conformal_classifier, predict_prediction_sets
     from src.conformal.mondrian_cp import MondrianConformalClassifier
 
     classes = np.asarray(getattr(estimator, "classes_", [1.0, 2.0, 3.0]))
+    y_cal_arr = np.asarray(y_cal)
+    missing_cal_classes = np.setdiff1d(classes, np.unique(y_cal_arr))
+    if len(missing_cal_classes) > 0:
+        raise ValueError(f"Calibration split is missing classes present in estimator: {missing_cal_classes}")
+
     y_test_arr = np.asarray(y_test)
     raw_probs = estimator.predict_proba(X_test)
     raw_preds = classes[np.argmax(raw_probs, axis=1)]
@@ -189,23 +194,29 @@ def compute_ae_method_comparison(
     y_ps_e = mcp.predict_set(X_test)
     sizes_e = np.sum(y_ps_e, axis=1)
     mask_e = (sizes_e == 1)
-    preds_e_single = np.array([classes[np.argmax(y_ps_e[i])] if mask_e[i] else -1 for i in range(len(y_test_arr))])
+    mcp_classes = np.asarray(getattr(mcp, "classes_", classes))
+    preds_e_single = np.array([mcp_classes[np.argmax(y_ps_e[i])] if mask_e[i] else -1 for i in range(len(y_test_arr))])
 
     # Calibrator for Method C: Platt Scaling
+    cal_probs_cal_input = estimator.predict_proba(X_cal)
     cal_lr = LogisticRegression(solver="lbfgs", max_iter=1000, random_state=42)
-    cal_lr.fit(estimator.predict_proba(X_cal), y_cal)
+    cal_lr.fit(cal_probs_cal_input, y_cal)
+    cal_classes = np.asarray(getattr(cal_lr, "classes_", classes))
     cal_probs = cal_lr.predict_proba(raw_probs)
     cal_conf = np.max(cal_probs, axis=1)
-    cal_preds = classes[np.argmax(cal_probs, axis=1)]
+    cal_preds = cal_classes[np.argmax(cal_probs, axis=1)]
 
     # Determine thresholds for B and C
     taus = np.linspace(0.40, 0.99, 500)
     if matched_coverage is not None:
         target_cov = matched_coverage
-        tau_b = taus[np.argmin([abs(np.mean(raw_conf >= t) - target_cov) for t in taus])]
-        tau_c = taus[np.argmin([abs(np.mean(cal_conf >= t) - target_cov) for t in taus])]
-        crit_b = f"max P_raw >= {tau_b:.3f} (matched to {target_cov:.1%})"
-        crit_c = f"max P_calib >= {tau_c:.3f} (matched to {target_cov:.1%})"
+        # Choose and freeze cutoffs strictly on calibration split to eliminate test-set snooping
+        raw_conf_cal = np.max(cal_probs_cal_input, axis=1)
+        cal_conf_cal = np.max(cal_lr.predict_proba(cal_probs_cal_input), axis=1)
+        tau_b = float(taus[np.argmin([abs(np.mean(raw_conf_cal >= t) - target_cov) for t in taus])])
+        tau_c = float(taus[np.argmin([abs(np.mean(cal_conf_cal >= t) - target_cov) for t in taus])])
+        crit_b = f"max P_raw >= {tau_b:.3f} (cal-tuned to target {target_cov:.1%})"
+        crit_c = f"max P_calib >= {tau_c:.3f} (cal-tuned to target {target_cov:.1%})"
     else:
         tau_b = 0.80
         tau_c = 0.80
@@ -245,21 +256,23 @@ def compute_ae_method_comparison(
     })
 
     # Method C
-    # Using cal_preds (which equals argmax of calibrated probabilities)
-    m_c = evaluate_selective_abstention(y_test_arr, cal_preds, mask_c)
+    # Evaluate raw RF argmax risk on accepted mask_c AND calibrated prediction risk
+    m_c_rf = evaluate_selective_abstention(y_test_arr, raw_preds, mask_c)
+    m_c_cal = evaluate_selective_abstention(y_test_arr, cal_preds, mask_c)
     rows.append({
         "Method": f"Method C: Calibrated Threshold (Platt)",
         "Criterion": crit_c,
-        "Coverage": m_c["coverage"],
-        "Selective Risk (RF argmax)": m_c["selective_risk"],
-        "Selective Accuracy": m_c["selective_accuracy"],
-        "Abstained Count": m_c["n_abstained"],
-        "False Reassurances": m_c["false_reassurances"],
-        "False Alarms": m_c["false_alarms"]
+        "Coverage": m_c_rf["coverage"],
+        "Selective Risk (RF argmax)": m_c_rf["selective_risk"],
+        "Selective Risk (Calibrated)": m_c_cal["selective_risk"],
+        "Selective Accuracy": m_c_rf["selective_accuracy"],
+        "Abstained Count": m_c_rf["n_abstained"],
+        "False Reassurances": m_c_rf["false_reassurances"],
+        "False Alarms": m_c_rf["false_alarms"]
     })
 
     # Method D: Global Conformal
-    # Evaluated with RF argmax on accepted cases
+    # Evaluated with RF argmax on accepted cases and singleton prediction
     m_d_argmax = evaluate_selective_abstention(y_test_arr, raw_preds, mask_d)
     m_d_single = evaluate_selective_abstention(y_test_arr, preds_d_single, mask_d)
     rows.append({
@@ -271,7 +284,9 @@ def compute_ae_method_comparison(
         "Abstained Count": m_d_argmax["n_abstained"],
         "False Reassurances": m_d_argmax["false_reassurances"],
         "False Alarms": m_d_argmax["false_alarms"],
-        "Singleton-Only Risk": m_d_single["selective_risk"]
+        "Singleton-Only Risk": m_d_single["selective_risk"],
+        "False Reassurances (Singleton)": m_d_single["false_reassurances"],
+        "False Alarms (Singleton)": m_d_single["false_alarms"]
     })
 
     # Method E: Mondrian Conformal
@@ -286,7 +301,9 @@ def compute_ae_method_comparison(
         "Abstained Count": m_e_argmax["n_abstained"],
         "False Reassurances": m_e_argmax["false_reassurances"],
         "False Alarms": m_e_argmax["false_alarms"],
-        "Singleton-Only Risk": m_e_single["selective_risk"]
+        "Singleton-Only Risk": m_e_single["selective_risk"],
+        "False Reassurances (Singleton)": m_e_single["false_reassurances"],
+        "False Alarms (Singleton)": m_e_single["false_alarms"]
     })
 
     return pd.DataFrame(rows)
@@ -301,6 +318,7 @@ def compute_risk_coverage_curves(
 ) -> Dict[str, pd.DataFrame]:
     """
     Generate points along the Risk-Coverage (RC) curve for Methods B, C, D, and E.
+    Returns schema-bearing DataFrames even when sweeps have no qualifying points.
     """
     from src.conformal.global_cp import fit_global_conformal_classifier, predict_prediction_sets
     from src.conformal.mondrian_cp import MondrianConformalClassifier
@@ -321,14 +339,17 @@ def compute_risk_coverage_curves(
         if np.sum(mask) >= 5:
             res = evaluate_selective_abstention(y_test_arr, raw_preds, mask)
             rc_raw.append({"coverage": res["coverage"], "risk": res["selective_risk"], "tau": tau})
-    df_rc_raw = pd.DataFrame(rc_raw).drop_duplicates(subset=["coverage"]).sort_values("coverage")
+    df_rc_raw = pd.DataFrame(rc_raw, columns=["coverage", "risk", "tau"])
+    if not df_rc_raw.empty:
+        df_rc_raw = df_rc_raw.drop_duplicates(subset=["coverage"]).sort_values("coverage")
 
     # 2. Method C: Calibrated Probability Thresholding (Platt Scaling)
     cal_lr = LogisticRegression(solver="lbfgs", max_iter=1000, random_state=42)
     cal_lr.fit(estimator.predict_proba(X_cal), y_cal)
     cal_probs = cal_lr.predict_proba(raw_probs)
     cal_conf = np.max(cal_probs, axis=1)
-    cal_preds = classes[np.argmax(cal_probs, axis=1)]
+    cal_classes = np.asarray(getattr(cal_lr, "classes_", classes))
+    cal_preds = cal_classes[np.argmax(cal_probs, axis=1)]
 
     rc_cal = []
     for tau in thresholds:
@@ -336,7 +357,9 @@ def compute_risk_coverage_curves(
         if np.sum(mask) >= 5:
             res = evaluate_selective_abstention(y_test_arr, cal_preds, mask)
             rc_cal.append({"coverage": res["coverage"], "risk": res["selective_risk"], "tau": tau})
-    df_rc_cal = pd.DataFrame(rc_cal).drop_duplicates(subset=["coverage"]).sort_values("coverage")
+    df_rc_cal = pd.DataFrame(rc_cal, columns=["coverage", "risk", "tau"])
+    if not df_rc_cal.empty:
+        df_rc_cal = df_rc_cal.drop_duplicates(subset=["coverage"]).sort_values("coverage")
 
     # 3. Method D: Global Conformal Sweep
     alphas = np.linspace(0.01, 0.40, 35)
@@ -352,7 +375,9 @@ def compute_risk_coverage_curves(
             preds = np.array([classes[np.argmax(y_ps[i])] if mask[i] else -1 for i in range(len(y_test_arr))])
             res = evaluate_selective_abstention(y_test_arr, preds, mask)
             rc_global.append({"coverage": res["coverage"], "risk": res["selective_risk"], "alpha": a})
-    df_rc_global = pd.DataFrame(rc_global).drop_duplicates(subset=["coverage"]).sort_values("coverage")
+    df_rc_global = pd.DataFrame(rc_global, columns=["coverage", "risk", "alpha"])
+    if not df_rc_global.empty:
+        df_rc_global = df_rc_global.drop_duplicates(subset=["coverage"]).sort_values("coverage")
 
     # 4. Method E: Mondrian Conformal Sweep
     rc_mondrian = []
@@ -362,10 +387,13 @@ def compute_risk_coverage_curves(
         sizes = np.sum(y_ps, axis=1)
         mask = (sizes == 1)
         if np.sum(mask) >= 5:
-            preds = np.array([classes[np.argmax(y_ps[i])] if mask[i] else -1 for i in range(len(y_test_arr))])
+            mcp_classes = np.asarray(getattr(mcp, "classes_", classes))
+            preds = np.array([mcp_classes[np.argmax(y_ps[i])] if mask[i] else -1 for i in range(len(y_test_arr))])
             res = evaluate_selective_abstention(y_test_arr, preds, mask)
             rc_mondrian.append({"coverage": res["coverage"], "risk": res["selective_risk"], "alpha": a})
-    df_rc_mondrian = pd.DataFrame(rc_mondrian).drop_duplicates(subset=["coverage"]).sort_values("coverage")
+    df_rc_mondrian = pd.DataFrame(rc_mondrian, columns=["coverage", "risk", "alpha"])
+    if not df_rc_mondrian.empty:
+        df_rc_mondrian = df_rc_mondrian.drop_duplicates(subset=["coverage"]).sort_values("coverage")
 
     return {
         "raw": df_rc_raw,
@@ -400,22 +428,46 @@ def plot_risk_coverage_curves(
     ax1.plot(1.0, baseline_risk, marker="*", markersize=14, color="black", label=f"Method A: Baseline (Risk={baseline_risk:.2%})", zorder=5)
 
     # Method B
-    ax1.plot(df_raw["coverage"], df_raw["risk"], marker="o", markersize=4, color="#1f77b4", linewidth=2, label="Method B: Raw Conf Threshold")
+    if not df_raw.empty and "coverage" in df_raw.columns:
+        ax1.plot(df_raw["coverage"], df_raw["risk"], marker="o", markersize=4, color="#1f77b4", linewidth=2, label="Method B: Raw Conf Threshold")
 
     # Method C
-    ax1.plot(df_cal["coverage"], df_cal["risk"], marker="s", markersize=4, color="#ff7f0e", linewidth=2, label="Method C: Calibrated Threshold")
+    if not df_cal.empty and "coverage" in df_cal.columns:
+        ax1.plot(df_cal["coverage"], df_cal["risk"], marker="s", markersize=4, color="#ff7f0e", linewidth=2, label="Method C: Calibrated Threshold")
 
     # Method D
-    ax1.plot(df_global["coverage"], df_global["risk"], marker="^", markersize=5, color="#9467bd", linewidth=2, label="Method D: Global Conformal LAC")
+    if not df_global.empty and "coverage" in df_global.columns:
+        ax1.plot(df_global["coverage"], df_global["risk"], marker="^", markersize=5, color="#9467bd", linewidth=2, label="Method D: Global Conformal LAC")
 
     # Method E
-    ax1.plot(df_mon["coverage"], df_mon["risk"], marker="d", markersize=5, color="#2ca02c", linewidth=2.5, label="Method E: Mondrian Conformal LAC")
+    if not df_mon.empty and "coverage" in df_mon.columns:
+        ax1.plot(df_mon["coverage"], df_mon["risk"], marker="d", markersize=5, color="#2ca02c", linewidth=2.5, label="Method E: Mondrian Conformal LAC")
 
     ax1.set_xlabel("Coverage Φ (Fraction of Accepted Cases)", fontweight="bold")
     ax1.set_ylabel("Selective Risk R (Error Rate on Accepted)", fontweight="bold")
     ax1.set_title("Panel A: Risk–Coverage Curves (Trade-off Comparison)", fontweight="bold", fontsize=11)
-    ax1.set_xlim([0.65, 1.02])
-    ax1.set_ylim([-0.005, 0.08])
+
+    # Derive dynamic limits to avoid clipping valid sweep points
+    all_covs = []
+    all_risks = [baseline_risk]
+    for df in [df_raw, df_cal, df_global, df_mon]:
+        if not df.empty and "coverage" in df.columns:
+            all_covs.extend(df["coverage"].dropna().tolist())
+            all_risks.extend(df["risk"].dropna().tolist())
+
+    if all_covs:
+        min_cov = max(0.0, float(np.min(all_covs)) - 0.05)
+        max_cov = min(1.05, float(np.max(all_covs)) + 0.02)
+        ax1.set_xlim([min_cov, max_cov])
+    else:
+        ax1.set_xlim([0.65, 1.02])
+
+    if all_risks:
+        max_r = max(0.08, float(np.max(all_risks)) + 0.01)
+        ax1.set_ylim([-0.005, min(1.0, max_r)])
+    else:
+        ax1.set_ylim([-0.005, 0.08])
+
     ax1.legend(loc="upper left")
 
     # Panel B: Method A-E Comparison Bar Chart
@@ -432,12 +484,19 @@ def plot_risk_coverage_curves(
         ax2.set_xticklabels(methods, fontweight="bold", fontsize=9)
         ax2.set_ylabel("Selective Accuracy (1 - Risk)", fontweight="bold")
         ax2.set_title("Panel B: Accuracy on Accepted Cases (with Abstained Counts)", fontweight="bold", fontsize=11)
-        ax2.set_ylim([0.85, 1.02])
+        
+        valid_accs = [a for a in accuracies if not np.isnan(a)]
+        min_acc = max(0.0, min(valid_accs) - 0.05) if valid_accs else 0.85
+        ax2.set_ylim([min_acc, 1.02])
 
         for i, bar in enumerate(bars):
             h = bar.get_height()
-            ax2.text(bar.get_x() + bar.get_width() / 2, h + 0.005, f"{h:.1%}\n(Abs: {abstained[i]})",
-                     ha="center", va="bottom", fontsize=8, fontweight="bold")
+            if not np.isnan(h):
+                ax2.text(bar.get_x() + bar.get_width() / 2, h + 0.005, f"{h:.1%}\n(Abs: {abstained[i]})",
+                         ha="center", va="bottom", fontsize=8, fontweight="bold")
+            else:
+                ax2.text(bar.get_x() + bar.get_width() / 2, min_acc + 0.02, "N/A\n(0 acc)",
+                         ha="center", va="bottom", fontsize=8, fontweight="bold")
 
     plt.tight_layout()
     if save_path:

@@ -15,7 +15,7 @@
 Standard machine learning models in obstetrical care produce forced point diagnoses on cardiotocography (CTG) recordings, leading to hazardous false reassurances or false alarms. This study implements:
 1. **Global vs. Mondrian Conformal Prediction:** Demonstrating the minority coverage gap of standard marginal conformal prediction and its resolution via exact finite-sample class-conditional calibration.
 2. **Selective Abstention:** Benchmarking five decision policies (Methods A–E) at matched coverage with clinical error tracking (false reassurances and false alarms).
-3. **Finite-Sample Sensitivity (RQ3):** Monte Carlo subsampling and bootstrap estimation of calibration set size limits in rare disease subsets.
+3. **Finite-Sample Sensitivity (RQ3):** Monte Carlo stratified subsampling across calibration set size limits (15%–75%) and full-calibration evaluation at 100% in rare disease subsets.
 
 ---
 
@@ -53,7 +53,7 @@ python src/evaluate_all.py
 ### Fixed Experimental Parameters
 - **Global Random Seed:** `42`
 - **Data Splitting Protocol:** Stratified 60% Train ($N=1,275$), 20% Calibration ($N=425$), 20% Sacred Test Split ($N=426$)
-- **Base Estimator:** `RandomForestClassifier(n_estimators=300, random_state=42)`
+- **Base Estimator:** `RandomForestClassifier(n_estimators=300, class_weight='balanced', random_state=42)`
 - **Calibrator:** Multinomial Logistic Regression (`solver='lbfgs'`, fitted on calibration set probabilities)
 - **Nominal Significance Level:** $\alpha = 0.10$ ($90.0\%$ target coverage guarantee)
 - **Repeated Splits Benchmark:** 100 repeated stratified 60/20/20 splits (`Mean ± Std`)

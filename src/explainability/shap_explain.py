@@ -191,7 +191,18 @@ def plot_local_patient_explanation(
 
     y_labels = []
     for i, f in enumerate(feats):
-        val_str = f" = {raw_vals[i]:.2f}" if raw_vals[i] is not None else ""
+        if raw_vals[i] is not None and not (isinstance(raw_vals[i], float) and np.isnan(raw_vals[i])):
+            v = raw_vals[i]
+            if abs(v) < 1e-6:
+                val_str = " = 0"
+            elif abs(v) < 0.01:
+                val_str = f" = {v:.4f}".rstrip('0')
+            elif float(v).is_integer():
+                val_str = f" = {int(v)}"
+            else:
+                val_str = f" = {v:.2f}"
+        else:
+            val_str = ""
         y_labels.append(f"{f}{val_str}")
 
     ax.set_yticks(y_pos)

@@ -14,12 +14,12 @@ Key Features & Strict Methodological Fixes:
    - Singleton-Only Risk: Conformal prediction set singleton diagnosis risk.
    - Clinical error tracking: False Reassurances (Pathological -> Normal) and False Alarms (Normal -> Pathological).
 3. Matched Coverage & Fixed Threshold dual reporting:
-   - Evaluates Methods B and C at both fixed tau=0.80 and matched coverage (Phi ~= 92.7%).
+   - Evaluates Methods B and C at both fixed tau=0.80 and calibration-matched coverage to Method E.
 4. Single-split sacred test set evaluation (N=426, 35 Pathological, 59 Suspect, 332 Normal)
    AND 100 Repeated Stratified 60/20/20 Splits (Reporting Mean +/- Std).
-5. RQ3 Calibration-size Sensitivity Analysis with bootstrap resampling at 100% calibration size
-   (eliminating the artificial +/- 0.0 stability artifact) and anchoring on n_k >= 9.
-6. Exports test prediction arrays (CSV and NPZ) and regenerates all publication figures.
+5. RQ3 Calibration-size Sensitivity Analysis across subsampled calibration fractions (15%–75%)
+   and the complete calibration partition at 100%.
+6. Exports test prediction arrays (CSV and NPZ) and regenerates core uncertainty & conformal publication figures (Figs 2, 3, 4, 5, and 5B).
 """
 
 import os
@@ -146,12 +146,14 @@ def run_full_evaluation():
         rf = joblib.load(model_path)
         print("Loaded pre-trained Random Forest model.")
     else:
-        print("Training Random Forest model (300 estimators, random_state=42)...")
-        rf = RandomForestClassifier(n_estimators=300, random_state=RANDOM_STATE, n_jobs=-1)
+        print("Training Random Forest model (300 estimators, class_weight='balanced', random_state=42)...")
+        rf = RandomForestClassifier(n_estimators=300, class_weight="balanced", random_state=RANDOM_STATE, n_jobs=-1)
         rf.fit(X_train, y_train)
         MODELS_DIR.mkdir(parents=True, exist_ok=True)
-        joblib.dump(rf, model_path)
-        print(f"Saved model to {model_path}")
+        tmp_model_path = model_path.with_suffix(".tmp")
+        joblib.dump(rf, tmp_model_path)
+        os.replace(tmp_model_path, model_path)
+        print(f"Saved model atomically to {model_path}")
 
     # 3. Baseline Performance
     base_res = evaluate_baseline_model(rf, X_test, y_test)
@@ -225,36 +227,42 @@ def run_full_evaluation():
     print("\n--- METHODS A-E COMPARISON ON SACRED SPLIT ---")
     # A) Fixed tau = 0.80 for B & C
     df_ae_fixed = compute_ae_method_comparison(rf, X_cal, y_cal, X_test, y_test, alpha=0.10, matched_coverage=None)
-    # B) Matched Coverage to Method E
-    coverage_target_e = float(np.mean(mask_e_accept))
-    df_ae_matched = compute_ae_method_comparison(rf, X_cal, y_cal, X_test, y_test, alpha=0.10, matched_coverage=coverage_target_e)
+    # B) Matched Coverage to Method E's calibration-set singleton acceptance rate (no test snooping)
+    y_ps_e_cal = mcp.predict_set(X_cal)
+    coverage_target_e_cal = float(np.mean(np.sum(y_ps_e_cal, axis=1) == 1))
+    coverage_target_e_test = float(np.mean(mask_e_accept))
+    df_ae_matched = compute_ae_method_comparison(rf, X_cal, y_cal, X_test, y_test, alpha=0.10, matched_coverage=coverage_target_e_cal)
 
     print("\nTable: Methods A-E with Fixed Tau (0.80):")
     print(df_ae_fixed.to_string(index=False))
 
-    print(f"\nTable: Methods A-E with Matched Coverage (Matched to Method E = {coverage_target_e:.2%}):")
+    print(f"\nTable: Methods A-E with Matched Coverage (Cal target = {coverage_target_e_cal:.2%}, Method E test coverage = {coverage_target_e_test:.2%}):")
     print(df_ae_matched.to_string(index=False))
 
     # 8. Export Single-Split Prediction Arrays
     print("\n--- EXPORTING TEST PREDICTION ARRAYS ---")
+    raw_probs_cal = rf.predict_proba(X_cal)
+    raw_conf_cal = np.max(raw_probs_cal, axis=1)
     raw_probs = base_res["probs"]
     raw_conf = np.max(raw_probs, axis=1)
 
     # Calibrator
     cal_lr = LogisticRegression(solver="lbfgs", max_iter=1000, random_state=RANDOM_STATE)
-    cal_lr.fit(rf.predict_proba(X_cal), y_cal)
+    cal_lr.fit(raw_probs_cal, y_cal)
+    cal_probs_cal = cal_lr.predict_proba(raw_probs_cal)
+    cal_conf_cal = np.max(cal_probs_cal, axis=1)
     cal_probs = cal_lr.predict_proba(raw_probs)
     cal_conf = np.max(cal_probs, axis=1)
-    cal_preds = rf.classes_[np.argmax(cal_probs, axis=1)]
+    cal_preds = cal_lr.classes_[np.argmax(cal_probs, axis=1)]
 
     # Fixed threshold masks
     mask_b_fixed = (raw_conf >= 0.80)
     mask_c_fixed = (cal_conf >= 0.80)
 
-    # Matched threshold masks
+    # Matched threshold masks tuned strictly on Calibration Set
     taus = np.linspace(0.40, 0.99, 500)
-    tau_b_match = taus[np.argmin([abs(np.mean(raw_conf >= t) - coverage_target_e) for t in taus])]
-    tau_c_match = taus[np.argmin([abs(np.mean(cal_conf >= t) - coverage_target_e) for t in taus])]
+    tau_b_match = taus[np.argmin([abs(np.mean(raw_conf_cal >= t) - coverage_target_e_cal) for t in taus])]
+    tau_c_match = taus[np.argmin([abs(np.mean(cal_conf_cal >= t) - coverage_target_e_cal) for t in taus])]
     mask_b_match = (raw_conf >= tau_b_match)
     mask_c_match = (cal_conf >= tau_c_match)
 
@@ -357,7 +365,7 @@ def run_full_evaluation():
         X_c, X_te, y_c, y_te = train_test_split(X_tmp, y_tmp, test_size=0.50, random_state=seed, stratify=y_tmp)
 
         # Base RF
-        rf_rep = RandomForestClassifier(n_estimators=300, random_state=seed, n_jobs=-1)
+        rf_rep = RandomForestClassifier(n_estimators=300, class_weight="balanced", random_state=seed, n_jobs=-1)
         rf_rep.fit(X_tr, y_tr)
 
         # Baseline
@@ -401,12 +409,14 @@ def run_full_evaluation():
         stats_accumulator["ae_risk_A"].append(1.0 - acc_rep)
 
         # Method E singleton
+        y_ps_e_cal_rep = mcp_rep.predict_set(X_c)
+        cov_e_cal_rep = float(np.mean(np.sum(y_ps_e_cal_rep, axis=1) == 1))
         sizes_e_rep = np.sum(y_ps_e_rep, axis=1)
         mask_e_rep = (sizes_e_rep == 1)
         cov_e_rep = float(np.mean(mask_e_rep))
-        risk_e_argmax = float(np.mean(preds_te[mask_e_rep] != y_te[mask_e_rep])) if np.sum(mask_e_rep) > 0 else 0.0
+        risk_e_argmax = float(np.mean(preds_te[mask_e_rep] != y_te[mask_e_rep])) if np.sum(mask_e_rep) > 0 else np.nan
         preds_e_single = np.array([rf_rep.classes_[np.argmax(y_ps_e_rep[i])] if mask_e_rep[i] else -1 for i in range(len(y_te))])
-        risk_e_single = float(np.mean(preds_e_single[mask_e_rep] != y_te[mask_e_rep])) if np.sum(mask_e_rep) > 0 else 0.0
+        risk_e_single = float(np.mean(preds_e_single[mask_e_rep] != y_te[mask_e_rep])) if np.sum(mask_e_rep) > 0 else np.nan
         stats_accumulator["ae_cov_E"].append(cov_e_rep)
         stats_accumulator["ae_risk_E_argmax"].append(risk_e_argmax)
         stats_accumulator["ae_risk_E_single"].append(risk_e_single)
@@ -422,41 +432,46 @@ def run_full_evaluation():
         sizes_d_rep = np.sum(y_ps_d_rep, axis=1)
         mask_d_rep = (sizes_d_rep == 1)
         cov_d_rep = float(np.mean(mask_d_rep))
-        risk_d_argmax = float(np.mean(preds_te[mask_d_rep] != y_te[mask_d_rep])) if np.sum(mask_d_rep) > 0 else 0.0
+        risk_d_argmax = float(np.mean(preds_te[mask_d_rep] != y_te[mask_d_rep])) if np.sum(mask_d_rep) > 0 else np.nan
         preds_d_single = np.array([rf_rep.classes_[np.argmax(y_ps_d_rep[i])] if mask_d_rep[i] else -1 for i in range(len(y_te))])
-        risk_d_single = float(np.mean(preds_d_single[mask_d_rep] != y_te[mask_d_rep])) if np.sum(mask_d_rep) > 0 else 0.0
+        risk_d_single = float(np.mean(preds_d_single[mask_d_rep] != y_te[mask_d_rep])) if np.sum(mask_d_rep) > 0 else np.nan
         stats_accumulator["ae_cov_D"].append(cov_d_rep)
         stats_accumulator["ae_risk_D_argmax"].append(risk_d_argmax)
         stats_accumulator["ae_risk_D_single"].append(risk_d_single)
 
-        # Method B (Fixed & Matched)
+        # Method B (Fixed & Cal-Matched)
+        probs_c = rf_rep.predict_proba(X_c)
+        conf_c = np.max(probs_c, axis=1)
+
         mask_b_f = (conf_te >= 0.80)
-        stats_accumulator["ae_cov_B_fixed"].append(np.mean(mask_b_f))
-        stats_accumulator["ae_risk_B_fixed"].append(np.mean(preds_te[mask_b_f] != y_te[mask_b_f]))
+        stats_accumulator["ae_cov_B_fixed"].append(float(np.mean(mask_b_f)))
+        stats_accumulator["ae_risk_B_fixed"].append(float(np.mean(preds_te[mask_b_f] != y_te[mask_b_f])) if np.sum(mask_b_f) > 0 else np.nan)
 
         taus_sub = np.linspace(0.40, 0.99, 100)
-        t_b_m = taus_sub[np.argmin([abs(np.mean(conf_te >= t) - cov_e_rep) for t in taus_sub])]
+        t_b_m = taus_sub[np.argmin([abs(np.mean(conf_c >= t) - cov_e_cal_rep) for t in taus_sub])]
         mask_b_m = (conf_te >= t_b_m)
-        stats_accumulator["ae_cov_B_match"].append(np.mean(mask_b_m))
-        stats_accumulator["ae_risk_B_match"].append(np.mean(preds_te[mask_b_m] != y_te[mask_b_m]))
+        stats_accumulator["ae_cov_B_match"].append(float(np.mean(mask_b_m)))
+        stats_accumulator["ae_risk_B_match"].append(float(np.mean(preds_te[mask_b_m] != y_te[mask_b_m])) if np.sum(mask_b_m) > 0 else np.nan)
 
         # Method C (Platt)
         cal_lr_rep = LogisticRegression(solver="lbfgs", max_iter=1000, random_state=seed)
-        cal_lr_rep.fit(rf_rep.predict_proba(X_c), y_c)
+        cal_lr_rep.fit(probs_c, y_c)
+        cal_probs_c = cal_lr_rep.predict_proba(probs_c)
+        cal_conf_c = np.max(cal_probs_c, axis=1)
         cal_probs_te = cal_lr_rep.predict_proba(probs_te)
         cal_conf_te = np.max(cal_probs_te, axis=1)
-        cal_preds_te = rf_rep.classes_[np.argmax(cal_probs_te, axis=1)]
+        cal_preds_te = cal_lr_rep.classes_[np.argmax(cal_probs_te, axis=1)]
 
         mask_c_f = (cal_conf_te >= 0.80)
-        stats_accumulator["ae_cov_C_fixed"].append(np.mean(mask_c_f))
-        stats_accumulator["ae_risk_C_fixed"].append(np.mean(cal_preds_te[mask_c_f] != y_te[mask_c_f]))
+        stats_accumulator["ae_cov_C_fixed"].append(float(np.mean(mask_c_f)))
+        stats_accumulator["ae_risk_C_fixed"].append(float(np.mean(cal_preds_te[mask_c_f] != y_te[mask_c_f])) if np.sum(mask_c_f) > 0 else np.nan)
 
-        t_c_m = taus_sub[np.argmin([abs(np.mean(cal_conf_te >= t) - cov_e_rep) for t in taus_sub])]
+        t_c_m = taus_sub[np.argmin([abs(np.mean(cal_conf_c >= t) - cov_e_cal_rep) for t in taus_sub])]
         mask_c_m = (cal_conf_te >= t_c_m)
-        stats_accumulator["ae_cov_C_match"].append(np.mean(mask_c_m))
-        stats_accumulator["ae_risk_C_match"].append(np.mean(cal_preds_te[mask_c_m] != y_te[mask_c_m]))
+        stats_accumulator["ae_cov_C_match"].append(float(np.mean(mask_c_m)))
+        stats_accumulator["ae_risk_C_match"].append(float(np.mean(cal_preds_te[mask_c_m] != y_te[mask_c_m])) if np.sum(mask_c_m) > 0 else np.nan)
 
-    repeated_results = {k: {"mean": float(np.mean(v)), "std": float(np.std(v))} for k, v in stats_accumulator.items()}
+    repeated_results = {k: {"mean": float(np.nanmean(v)), "std": float(np.nanstd(v))} for k, v in stats_accumulator.items()}
     rep_out = PROCESSED_DIR / "repeated_splits_100_results.json"
     with open(rep_out, "w") as f:
         json.dump(repeated_results, f, indent=2)
@@ -472,7 +487,7 @@ def run_full_evaluation():
     print(f"Method E Risk (Singleton): {repeated_results['ae_risk_E_single']['mean']:.2%} ± {repeated_results['ae_risk_E_single']['std']:.2%}")
     print(f"Method E Enrichment: {repeated_results['enrichment_E']['mean']:.2f}x ± {repeated_results['enrichment_E']['std']:.2f}x")
 
-    # 10. RQ3 Sensitivity Experiment (Bootstrap resampled at 100%)
+    # 10. RQ3 Sensitivity Experiment (Complete calibration partition at 100%)
     print("\n--- RUNNING RQ3 CALIBRATION-SET SIZE SENSITIVITY EXPERIMENT ---")
     df_sensitivity = run_calibration_sensitivity_experiment(
         rf, X_cal, y_cal, X_test, y_test, alpha=0.10, fractions=[0.15, 0.25, 0.35, 0.50, 0.75, 1.00], n_trials=30, random_state=RANDOM_STATE
@@ -518,7 +533,7 @@ def run_full_evaluation():
     labels = ["A: Baseline", "B: Raw Conf", "C: Calibrated", "D: Global CP", "E: Mondrian CP"]
     ax.set_xticklabels(labels, fontweight="bold")
     ax.set_ylabel("Percentage (%)", fontweight="bold")
-    ax.set_title("Methods A-E Comparison at Matched Coverage (~92.7%)", fontweight="bold", fontsize=12)
+    ax.set_title(f"Methods A-E Comparison (Methods B & C cal-matched to Method E: {coverage_target_e_cal:.1%})", fontweight="bold", fontsize=12)
     ax.set_ylim([0, 115])
     ax.legend(loc="upper right", framealpha=0.9)
     for i in range(len(df_ae_matched)):

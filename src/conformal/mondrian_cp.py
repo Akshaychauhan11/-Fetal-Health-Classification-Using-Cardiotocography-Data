@@ -59,6 +59,7 @@ class MondrianConformalClassifier:
     ) -> "MondrianConformalClassifier":
         """
         Fit class-specific non-conformity quantiles on the calibration partition.
+        Transactional state update: commits state only after calibration succeeds.
 
         Parameters
         ----------
@@ -66,45 +67,52 @@ class MondrianConformalClassifier:
         y_cal : calibration true labels (1.0, 2.0, 3.0)
         alpha : significance level (default: self.alpha)
         """
-        if alpha is not None:
-            self.alpha = float(alpha)
-
+        target_alpha = float(alpha) if alpha is not None else self.alpha
         y_cal_arr = np.asarray(y_cal)
+
+        # Invalidate old conformal state during recalibration
+        self.is_conformalized_ = False
+
         probs_cal = self.estimator.predict_proba(X_cal)
 
-        self.class_quantiles_ = {}
-        self.class_thresholds_ = {}
-        self.n_cal_per_class_ = {}
+        new_quantiles: Dict[float, float] = {}
+        new_thresholds: Dict[float, float] = {}
+        new_counts: Dict[float, int] = {}
 
         for k_idx, c in enumerate(self.classes_):
             mask_c = (y_cal_arr == c)
             n_k = int(np.sum(mask_c))
-            self.n_cal_per_class_[c] = n_k
+            new_counts[c] = n_k
 
             if n_k == 0:
                 # Fallback if no calibration samples exist for class
-                self.class_quantiles_[c] = 1.0
-                self.class_thresholds_[c] = 0.0
+                new_quantiles[c] = 1.0
+                new_thresholds[c] = 0.0
                 continue
 
             # Non-conformity score for true class: s_i = 1 - P(Y = c | X_i)
             scores_k = 1.0 - probs_cal[mask_c, k_idx]
 
             # Exact finite-sample rank order statistic: k = ceil((n_k + 1) * (1 - alpha))
-            rank = int(np.ceil((n_k + 1) * (1.0 - self.alpha)))
+            rank = int(np.ceil((n_k + 1) * (1.0 - target_alpha)))
 
             if rank > n_k:
                 # When ceil((n+1)(1-alpha)) > n, the finite-sample guarantee cannot be met
                 # without unconditionally including class c (probability threshold = 0.0)
-                self.class_quantiles_[c] = 1.0
-                self.class_thresholds_[c] = 0.0
+                new_quantiles[c] = 1.0
+                new_thresholds[c] = 0.0
             else:
                 scores_sorted = np.sort(scores_k)
                 # 0-indexed rank: rank - 1
                 q_k = float(scores_sorted[rank - 1])
-                self.class_quantiles_[c] = q_k
-                self.class_thresholds_[c] = max(0.0, 1.0 - q_k)
+                new_quantiles[c] = q_k
+                new_thresholds[c] = max(0.0, 1.0 - q_k)
 
+        # Commit state atomically only after successful completion
+        self.alpha = target_alpha
+        self.class_quantiles_ = new_quantiles
+        self.class_thresholds_ = new_thresholds
+        self.n_cal_per_class_ = new_counts
         self.is_conformalized_ = True
         return self
 
@@ -114,7 +122,9 @@ class MondrianConformalClassifier:
     ) -> np.ndarray:
         """
         Output boolean prediction sets for input samples.
-        A candidate label c is included in Gamma(x) iff P(Y = c | x) >= 1 - q_c.
+        A candidate label c is included in Gamma(x) iff s(x, c) <= q_c.
+        Direct comparison on non-conformity scores with 1e-12 tolerance preserves score ties
+        and prevents floating-point round-trip exclusion.
 
         Returns
         -------
@@ -128,8 +138,12 @@ class MondrianConformalClassifier:
         y_ps = np.zeros((n_samples, len(self.classes_)), dtype=bool)
 
         for k_idx, c in enumerate(self.classes_):
-            thresh = self.class_thresholds_[c]
-            y_ps[:, k_idx] = (probs[:, k_idx] >= thresh)
+            q_k = self.class_quantiles_.get(c, 1.0)
+            if q_k >= 1.0:
+                y_ps[:, k_idx] = True
+            else:
+                # Direct comparison on non-conformity score preserves exact calibration ties
+                y_ps[:, k_idx] = ((1.0 - probs[:, k_idx]) <= (q_k + 1e-12))
 
         return y_ps
 
@@ -266,6 +280,7 @@ def run_calibration_sensitivity_experiment(
     alpha: float = 0.10,
     fractions: Optional[List[float]] = None,
     n_trials: int = 30,
+    bootstrap_full: bool = False,
     random_state: int = 42
 ) -> pd.DataFrame:
     """
@@ -276,6 +291,7 @@ def run_calibration_sensitivity_experiment(
     prediction set volatility for the minority Pathological class.
 
     Reports: Mean +/- Std across trials (per Project Rule 6).
+    At fraction 1.00, evaluates the complete calibration partition consistently without replacement.
     """
     if fractions is None:
         fractions = [0.15, 0.25, 0.35, 0.50, 0.75, 1.00]
@@ -298,9 +314,12 @@ def run_calibration_sensitivity_experiment(
         overall_sizes = []
 
         if frac == 1.00:
-            # Bootstrap resample full calibration set to estimate variance realistically
-            rng = np.random.RandomState(random_state)
-            trials = [rng.choice(len(y_cal_arr), size=len(y_cal_arr), replace=True) for _ in range(n_trials)]
+            if bootstrap_full:
+                rng = np.random.RandomState(random_state)
+                trials = [rng.choice(len(y_cal_arr), size=len(y_cal_arr), replace=True) for _ in range(n_trials)]
+            else:
+                # Complete calibration partition evaluated without replacement (variance across identical full set is correctly 0.0)
+                trials = [np.arange(len(y_cal_arr))]
         else:
             sss = StratifiedShuffleSplit(n_splits=n_trials, train_size=cal_size, random_state=random_state)
             trials = [idx for idx, _ in sss.split(probs_cal, y_cal_arr)]
@@ -309,44 +328,49 @@ def run_calibration_sensitivity_experiment(
             sub_probs_cal = probs_cal[sub_idx]
             sub_y_cal = y_cal_arr[sub_idx]
 
-            # Compute Mondrian class thresholds on subsample using exact rank order statistic
-            thresholds = {}
+            # Compute Mondrian class quantiles on subsample using exact rank order statistic
+            quantiles = {}
             for k_idx, c in enumerate(classes):
                 mask_c = (sub_y_cal == c)
                 n_k = int(np.sum(mask_c))
                 if n_k == 0:
-                    thresholds[c] = 0.0
+                    quantiles[c] = 1.0
                     continue
                 scores_k = 1.0 - sub_probs_cal[mask_c, k_idx]
                 rank = int(np.ceil((n_k + 1) * (1.0 - alpha)))
                 if rank > n_k:
-                    thresholds[c] = 0.0
+                    quantiles[c] = 1.0
                 else:
                     scores_sorted = np.sort(scores_k)
                     q_k = float(scores_sorted[rank - 1])
-                    thresholds[c] = max(0.0, 1.0 - q_k)
+                    quantiles[c] = q_k
 
-            # Test prediction sets
+            # Test prediction sets using direct non-conformity comparison (preserving ties)
             ps_test = np.zeros((len(X_test), len(classes)), dtype=bool)
             for k_idx, c in enumerate(classes):
-                ps_test[:, k_idx] = (probs_test[:, k_idx] >= thresholds[c])
+                q_k = quantiles[c]
+                if q_k >= 1.0:
+                    ps_test[:, k_idx] = True
+                else:
+                    ps_test[:, k_idx] = ((1.0 - probs_test[:, k_idx]) <= (q_k + 1e-12))
 
             # Class-specific metrics
+            class_to_idx = {c: i for i, c in enumerate(classes)}
+
             # Pathological (3.0)
             mask_p = (y_test_arr == 3.0)
-            patho_covs.append(float(np.mean(ps_test[mask_p, 2])))
+            patho_covs.append(float(np.mean(ps_test[mask_p, class_to_idx[3.0]])))
             patho_sizes.append(float(np.mean(np.sum(ps_test[mask_p], axis=1))))
 
             # Suspect (2.0)
             mask_s = (y_test_arr == 2.0)
-            suspect_covs.append(float(np.mean(ps_test[mask_s, 1])))
+            suspect_covs.append(float(np.mean(ps_test[mask_s, class_to_idx[2.0]])))
 
             # Normal (1.0)
             mask_n = (y_test_arr == 1.0)
-            normal_covs.append(float(np.mean(ps_test[mask_n, 0])))
+            normal_covs.append(float(np.mean(ps_test[mask_n, class_to_idx[1.0]])))
 
             # Overall
-            class_to_idx = {c: i for i, c in enumerate(classes)}
             y_test_idx = np.array([class_to_idx[y] for y in y_test_arr])
             correct = [ps_test[i, y_test_idx[i]] for i in range(len(y_test_arr))]
             overall_covs.append(float(np.mean(correct)))

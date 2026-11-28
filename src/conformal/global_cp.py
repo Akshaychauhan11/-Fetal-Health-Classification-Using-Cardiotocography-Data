@@ -128,8 +128,14 @@ def evaluate_conformal_coverage(
 
     y_arr = np.asarray(y_true)
     if y_ps.ndim == 3:
-        # Squeeze last dimension if single confidence level
-        y_ps = y_ps[:, :, 0]
+        if y_ps.shape[2] == 1:
+            y_ps = y_ps[:, :, 0]
+        else:
+            raise ValueError(
+                f"y_ps contains {y_ps.shape[2]} confidence levels (shape: {y_ps.shape}). "
+                "evaluate_conformal_coverage evaluates a single confidence level at a time. "
+                "Pass a 2D slice y_ps[:, :, i] or iterate across confidence levels."
+            )
 
     n_samples = len(y_arr)
     set_sizes = np.sum(y_ps, axis=1)
@@ -204,7 +210,7 @@ def sweep_alpha_conformal(
         alphas = [0.01, 0.02, 0.05, 0.10, 0.15, 0.20, 0.25]
 
     confidence_levels = [round(1.0 - a, 4) for a in alphas]
-    classes = np.array(sorted(list(set(y_cal))))
+    classes = np.asarray(getattr(estimator, "classes_", sorted(list(set(y_cal)))))
 
     rows = []
     # Train conformal classifier with all target confidence levels
